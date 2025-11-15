@@ -1,9 +1,13 @@
 // BIBLIOTECAS --------------------------------------------------------------
 #include <Arduino.h> 
+#include <Wire.h>
+
 #include <lmic.h>
 #include <hal/hal.h>
 #include <SPI.h>
 
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 #include <Adafruit_Sensor.h>                       
 #include <DHT.h>
 #include <DHT_U.h>
@@ -16,7 +20,20 @@
 //#define USE_SMARTTHERMO_01
 #define USE_SMARTTHERMO_02
 
-//chaves de autenticação OTAA
+// pinos
+#define PIN_LORA_NSS   18
+#define PIN_LORA_RST   14
+#define PIN_LORA_DIO0  26
+#define PIN_LORA_DIO1  35
+#define PIN_LORA_DIO2  34
+#define PIN_SDA        4
+#define PIN_SCL        15
+#define PIN_DHT        13
+#define PIN_BUTTON     0
+#define PIN_RESET_OLED 16
+
+// lora
+// chaves de autenticação OTAA
 #ifdef USE_SMARTTHERMO_01
   #define APPEUI_KEY 0x32, 0x12, 0x00, 0x00, 0x00, 0x21, 0x33, 0x12                                                          //lsb
   #define DEVEUI_KEY 0x2F, 0x3E, 0x07, 0xD0, 0x7E, 0xD5, 0xB3, 0x70                                                          //lsb
@@ -27,57 +44,103 @@
   #define DEVEUI_KEY 0x37, 0x3E, 0x07, 0xD0, 0x7E, 0xD5, 0xB3, 0x70                                                          //lsb
   #define APPKEY_KEY 0x11, 0x2B, 0x91, 0x39, 0xE2, 0x45, 0x20, 0x7F, 0x71, 0xBD, 0xD4, 0x79, 0xDB, 0xC9, 0x4F, 0x68          //msb
 #endif
-
-//intervalo de envio
+// intervalo de envio
 const unsigned TX_INTERVAL = 60;
 
-//payload de envio
-uint8_t payload[4];
+// sensor
+#define DHTTYPE            DHT11
+#define DHT_SAMPLE_TIME_MS 2000
 
-//pinos lora
-#define LORA_NSS_PIN  18
-#define LORA_RST_PIN  14
-#define LORA_DIO0_PIN 26
-#define LORA_DIO1_PIN 35
-#define LORA_DIO2_PIN 34
-
-//dht type
-#define DHTTYPE    DHT11                           // Sensor DHT11
-//#define DHTTYPE      DHT22                       // Sensor DHT22 ou AM2302
-
-//dht pino
-#define DHTPIN 13
+// display
+#define DISPLAY_LENGTH_LOCAL 128
+#define DISPLAY_HEIGHT_LOCAL 64
+#define DISPLAY_ADDRESS      0x3C
+#define DISPLAY_TIMEOUT_MS   10000
+// seletor de orientação
+#define DISPLAY_VERTICAL
+//#define DISPLAY_HORIZONTAL
 // configuracoes ------------------------------------------------------------
 
-// DHT ----------------------------------------------------------------------
-DHT_Unified dht(DHTPIN, DHTTYPE); 
-float temp_raw;
-float hum_raw;
+// GLOBALS ------------------------------------------------------------------
+// flags
+volatile bool flag_button_pressed = false;
+volatile bool flag_display_on     = false;
+volatile bool flag_lora_online    = false;
+// temporais
+static unsigned long last_reading_time = 0;
+static unsigned long oled_on_time      = 0;
+// payload para envio
+uint8_t payload[4];
+// globals -------------------------------------------------------------------
 
-void dht_setup(){
-  dht.begin();
+// PROTOTIPOS ----------------------------------------------------------------
+// isr
+void button_setup();
+void button_loop();
+// dht
+void dht_read();
+void dht_build();
+void dht_print_values();
+void dht_print_packet();
+void dht_setup();
+void dht_loop();
+// display
+void display_on();
+void display_off();
+void display_readings();
+void display_setup();
+void display_loop();
+// lmic
+void do_send(osjob_t *j);
+void onEvent(ev_t ev);
+// prototipos ---------------------------------------------------------------
+
+// ISR ----------------------------------------------------------------------
+void IRAM_ATTR ISR_BOTAO() {
+  flag_button_pressed = true; 
 }
+
+void button_setup(){
+  pinMode(PIN_BUTTON, INPUT);
+  attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), ISR_BOTAO, FALLING);
+}
+
+void button_loop(){
+  if (flag_button_pressed) {
+    flag_button_pressed = false;
+    
+    // Liga o display e REINICIA o timer
+    display_on(); 
+    display_readings();
+    oled_on_time = millis(); // Inicia a contagem de 10s
+  }
+}
+// isr ----------------------------------------------------------------------
+
+// DHT ----------------------------------------------------------------------
+// DHT ----------------------------------------------------------------------
+DHT_Unified dht(PIN_DHT, DHTTYPE); 
+volatile float temp_raw = 0.0; 
+volatile float hum_raw = 0.0;
 
 void dht_read(){
   sensors_event_t event;
-  float last_temp = temp_raw;
-  float last_hum = hum_raw;   
-
   dht.temperature().getEvent(&event);
-  if (!isnan(event.temperature))
-  {
+  if (!isnan(event.temperature)) {
     temp_raw = event.temperature; 
+  } else {
+    temp_raw = 0.0;
   }
-
   dht.humidity().getEvent(&event);
-  if (!isnan(event.relative_humidity))
-  {
+  if (!isnan(event.relative_humidity)) {
     hum_raw = event.relative_humidity; 
+  } else {
+    hum_raw = 0.0;
   }
 }
 
 void dht_build(){
-  dht_read(); 
+  dht_read();
 
   // Temperatura
   uint16_t temp_100 = (uint16_t)(temp_raw * 100.0f);
@@ -90,7 +153,7 @@ void dht_build(){
   payload[3] = hum_100 & 0xFF;        
 }
 
-void print_readings() {
+void dht_print_values() {
   Serial.println(F("--- Leituras do Sensor (Raw) ---"));
   Serial.print(F("Temperatura Lida: "));
   Serial.print(temp_raw, 2); // Imprime com 2 casas decimais
@@ -102,7 +165,7 @@ void print_readings() {
   Serial.println(F("--------------------------------"));
 }
 
-void print_packet() {
+void dht_print_packet() {
   Serial.println(F("--- Payload Embalado (Hex) ---"));
   
   for (int i = 0; i < 4; i++) {
@@ -118,7 +181,178 @@ void print_packet() {
   Serial.println();
   Serial.println(F("--------------------------------"));
 }
+
+void dht_setup(){
+  dht.begin();
+}
+
+void dht_loop(){
+  if (millis() - last_reading_time >= DHT_SAMPLE_TIME_MS) {
+    dht_read();
+    //dht_print();
+    last_reading_time = millis();
+    if (flag_display_on) {
+        display_readings();
+    }
+  }
+}
 // dht ----------------------------------------------------------------------
+
+// DISPLAY ------------------------------------------------------------------
+Adafruit_SSD1306 display(DISPLAY_LENGTH_LOCAL, DISPLAY_HEIGHT_LOCAL, &Wire, PIN_RESET_OLED);
+
+void display_on() {
+    if (!flag_display_on) {
+        digitalWrite(PIN_RESET_OLED, HIGH); 
+        delay(50); // crítico
+        
+        // re-inicializa a comunicação e os registradores do SSD1306
+        display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS); // crítico
+        
+        display.clearDisplay();
+        display.display();
+        
+        flag_display_on = true;
+        //Serial.println("Display LIGADO.");
+    }
+}
+
+void display_off() {
+    if (flag_display_on) {
+        display.clearDisplay(); 
+        display.display(); 
+        
+        digitalWrite(PIN_RESET_OLED, LOW); 
+        flag_display_on = false;
+        //Serial.println("Display DESLIGADO.");
+    }
+}
+
+void display_readings() {
+  
+  display.clearDisplay();
+  
+  #ifdef DISPLAY_HORIZONTAL
+  // Título
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("TEMPERATURA E UMIDADE");
+
+  // Temperatura
+  display.setTextSize(2);
+  display.setCursor(0, 15); 
+  display.print("T: ");
+  display.print(temp_raw, 1);
+  display.println(" C"); 
+
+  // Umidade
+  display.setTextSize(2);
+  display.setCursor(0, 35); 
+  display.print("U: ");
+  display.print(hum_raw, 1);
+  display.println(" %"); 
+  
+  // Status LoRa
+  display.setTextSize(1);
+  display.setCursor(0, 56);
+
+  if (flag_lora_online) {
+    display.print("Status: ONLINE");
+  } else {
+    display.print("Status: CONECTANDO");
+  }
+  #endif
+  
+  #ifdef DISPLAY_VERTICAL
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  // --- Temperatura ---
+  display.setTextSize(1);
+  display.setCursor(0, 15); 
+  display.println("Temp C:");
+  display.println("");
+  display.setTextSize(2);
+  display.print(temp_raw, 2);
+
+  // --- Umidade ---
+  display.setTextSize(1);
+  display.setCursor(0, 60); 
+  display.println("Umid %:");
+  display.println("");
+  display.setTextSize(2); 
+  display.print(hum_raw, 2);
+
+  // --- Status LoRa
+  display.setTextSize(1);
+  display.setCursor(0, 110); 
+  display.println("Status:");
+
+  if (flag_lora_online) {
+    display.print("ONLINE");
+  } else {
+    display.print("CONECTANDO");
+  }
+  #endif
+  
+  display.display();
+}
+
+void display_setup() {
+  // pino de reset do display
+  pinMode(PIN_RESET_OLED, OUTPUT);
+  digitalWrite(PIN_RESET_OLED, LOW); 
+  delay(50);
+  digitalWrite(PIN_RESET_OLED, HIGH);
+  // inicializacao do display
+  if(!display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS)) { 
+    Serial.println(F("Falha na inicializacao do SSD1306!"));
+    for(;;); 
+  }
+  
+  
+  // Exibição inicial SmartThermo
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  #ifdef DISPLAY_HORIZONTAL
+  display.setTextSize(2);
+  display.setCursor(34, 10);
+  display.println("Smart");
+  display.setTextSize(2);
+  display.setCursor(28, 30);
+  display.println("Thermo");
+  #endif
+
+  #ifdef DISPLAY_VERTICAL
+  // 1 - usb bottom
+  // 3 - usb top
+  display.setRotation(3); 
+  display.setTextSize(2);
+  display.setCursor(2, 43); 
+  display.println("Smart");
+  display.setTextSize(1);
+  display.setCursor(14, 65);
+  display.println("Thermo");
+  #endif
+
+  display.display();
+
+  flag_display_on = true;
+
+  delay(5000);
+
+  display_off();
+}
+
+void display_loop() {
+  if (flag_display_on) {
+    if (millis() - oled_on_time >= DISPLAY_TIMEOUT_MS) {
+      display_off(); // Desliga o display
+    }
+  }
+}
+// display ------------------------------------------------------------------
 
 // LMIC ---------------------------------------------------------------------
 static const u1_t PROGMEM APPEUI[8] = { APPEUI_KEY }; //lsb format
@@ -131,13 +365,11 @@ void os_getDevKey(u1_t *buf) { memcpy_P(buf, APPKEY, 16); }
 static osjob_t sendjob;
 
 const lmic_pinmap lmic_pins = {
-    .nss = LORA_NSS_PIN,
+    .nss = PIN_LORA_NSS,
     .rxtx = LMIC_UNUSED_PIN,
-    .rst = LORA_RST_PIN, 
-    .dio = {LORA_DIO0_PIN, LORA_DIO1_PIN, LORA_DIO2_PIN},
+    .rst = PIN_LORA_RST, 
+    .dio = {PIN_LORA_DIO0, PIN_LORA_DIO1, PIN_LORA_DIO2},
 };
-
-void do_send(osjob_t *j);
 
 // Callback de evento: todo evento do LoRaAN irá chamar essa
 // callback, de forma que seja possível saber o status da
@@ -190,6 +422,9 @@ void onEvent(ev_t ev)
             Serial.write(dados_recebidos);
         }
         // Agenda a transmissão automática com intervalo de TX_INTERVAL
+        if(!flag_lora_online){
+            flag_lora_online = true;
+        }
         os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(TX_INTERVAL), do_send);
         break;
     case EV_LOST_TSYNC:
@@ -228,10 +463,9 @@ void onEvent(ev_t ev)
 void do_send(osjob_t *j)
 {
     //static uint8_t payload[] = "Hello, world!";
-    // Verifica se não está ocorrendo uma transmissão no momento TX/RX
     dht_build();
-    print_readings();
-    print_packet();
+    dht_print_values();
+    dht_print_packet();
     if (LMIC.opmode & OP_TXRXPEND){
         Serial.println(F("OP_TXRXPEND, not sending"));
     }
@@ -243,12 +477,18 @@ void do_send(osjob_t *j)
 }
 // lmic ---------------------------------------------------------------------
 
+// SETUP --------------------------------------------------------------------
 void setup()
 {
   Serial.begin(SERIAL_BAUND);
   Serial.println(F("Starting"));
+  delay(1000);
+  Wire.begin(PIN_SDA, PIN_SCL);
 
+  // setup dos periféricos
+  display_setup();
   dht_setup();
+  button_setup();
 
   // LMIC init
   os_init();
@@ -257,8 +497,15 @@ void setup()
 
   do_send(&sendjob); //Start
 }
+// setup --------------------------------------------------------------------
 
+// LOOP ---------------------------------------------------------------------
 void loop()
 {
+    /* a leitura é atualizada a cada envio lora */
+    //dht_loop();
+    button_loop();
+    display_loop();
     os_runloop_once();
 }
+// loop ---------------------------------------------------------------------
