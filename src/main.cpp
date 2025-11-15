@@ -26,6 +26,8 @@
 #define DISPLAY_HEIGHT_LOCAL 64
 #define DISPLAY_ADDRESS      0x3C
 #define DISPLAY_TIMEOUT_MS   10000
+#define DISPLAY_VERTICAL
+//#define DISPLAY_HORIZONTAL
 // configuracoes ------------------------------------------------------------
 
 // FLAGS --------------------------------------------------------------------
@@ -150,6 +152,7 @@ void display_readings() {
   
   display.clearDisplay();
   
+  #ifdef DISPLAY_HORIZONTAL
   // Título
   display.setTextSize(1);
   display.setCursor(0, 0);
@@ -165,7 +168,7 @@ void display_readings() {
   // Umidade
   display.setTextSize(2);
   display.setCursor(0, 35); 
-  display.print("H: ");
+  display.print("U: ");
   display.print(hum_raw, 1);
   display.println(" %"); 
   
@@ -178,6 +181,39 @@ void display_readings() {
   } else {
     display.print("Status: CONECTANDO");
   }
+  #endif
+  
+  #ifdef DISPLAY_VERTICAL
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  // --- Temperatura ---
+  display.setTextSize(1);
+  display.setCursor(0, 15); 
+  display.println("Temp C:");
+  display.println("");
+  display.setTextSize(2);
+  display.print(temp_raw, 2);
+
+  // --- Umidade ---
+  display.setTextSize(1);
+  display.setCursor(0, 60); 
+  display.println("Umid %:");
+  display.println("");
+  display.setTextSize(2); 
+  display.print(hum_raw, 2);
+
+  // --- Status LoRa
+  display.setTextSize(1);
+  display.setCursor(0, 110); 
+  display.println("Status:");
+
+  if (flag_lora_online) {
+    display.print("ONLINE");
+  } else {
+    display.print("CONECTANDO");
+  }
+  #endif
   
   display.display();
 }
@@ -194,15 +230,32 @@ void display_setup() {
     for(;;); 
   }
   
+  
   // Exibição inicial SmartThermo
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
+
+  #ifdef DISPLAY_HORIZONTAL
   display.setTextSize(2);
   display.setCursor(34, 10);
   display.println("Smart");
   display.setTextSize(2);
   display.setCursor(28, 30);
   display.println("Thermo");
+  #endif
+
+  #ifdef DISPLAY_VERTICAL
+  // 1 - usb bottom
+  // 3 - usb top
+  display.setRotation(3); 
+  display.setTextSize(2);
+  display.setCursor(2, 43); 
+  display.println("Smart");
+  display.setTextSize(1);
+  display.setCursor(14, 65);
+  display.println("Thermo");
+  #endif
+
   display.display();
 
   flag_display_on = true;
