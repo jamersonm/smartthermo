@@ -48,7 +48,21 @@
 const unsigned TX_INTERVAL = 60;
 
 // sensor
-#define DHTTYPE            DHT11
+//#define USE_DHT11
+#define USE_DHT22
+
+#if defined(USE_DHT11) && defined(USE_DHT22)
+  #error "Defina apenas um: USE_DHT11 ou USE_DHT22"
+#endif
+#if !defined(USE_DHT11) && !defined(USE_DHT22)
+  #error "Nenhum sensor definido! Escolha USE_DHT11 ou USE_DHT22"
+#endif
+#ifdef USE_DHT11
+  #define DHTTYPE DHT11
+#endif
+#ifdef USE_DHT22
+  #define DHTTYPE DHT22
+#endif
 #define DHT_SAMPLE_TIME_MS 2000
 
 // display
@@ -183,6 +197,9 @@ void dht_print_packet() {
 }
 
 void dht_setup(){
+  #ifdef USE_DHT22
+    pinMode(PIN_DHT, INPUT_PULLUP);
+  #endif
   dht.begin();
 }
 
@@ -327,7 +344,7 @@ void display_setup() {
   #ifdef DISPLAY_VERTICAL
   // 1 - usb bottom
   // 3 - usb top
-  display.setRotation(3); 
+  display.setRotation(1); 
   display.setTextSize(2);
   display.setCursor(2, 43); 
   display.println("Smart");
